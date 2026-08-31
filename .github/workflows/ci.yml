@@ -1,0 +1,46 @@
+name: agent-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[test,lint]'
+      - run: ruff check siteadmin tests
+      - run: python -m compileall -q siteadmin
+      - run: pytest -q
+      - run: bash tests/smoke_install.sh
+      - run: docker build -t siteadmin-agent:ci .
+
+  installer-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu:24.04, debian:12, almalinux:9]
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shell prerequisites
+        shell: bash
+        run: |
+          if command -v apt-get >/dev/null; then apt-get update && apt-get install -y bash ca-certificates python3;
+          elif command -v dnf >/dev/null; then dnf install -y bash ca-certificates python3;
+          fi
+      - name: Check installer
+        shell: bash
+        run: |
+          mkdir -p /tmp/siteadmin-bin
+          printf '#!/bin/sh\nexit 0\n' > /tmp/siteadmin-bin/systemctl
+          chmod +x /tmp/siteadmin-bin/systemctl
+          PATH="/tmp/siteadmin-bin:$PATH" bash install.sh --check --systemd
+          bash tests/smoke_install.sh

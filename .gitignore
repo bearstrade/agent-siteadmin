@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Тесты и инструменты
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Локальные данные агента
+/var/lib/siteadmin/
+*.bak
+rollback/
+
+# OS/редакторы
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

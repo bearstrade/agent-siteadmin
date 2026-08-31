@@ -1,0 +1,15 @@
+services:
+  siteadmin:
+    build: .
+    container_name: siteadmin
+    restart: unless-stopped
+    environment:
+      SITEADMIN_ENDPOINT: ${SITEADMIN_ENDPOINT:?set SITEADMIN_ENDPOINT}
+      SITEADMIN_UPDATE_URL: ${SITEADMIN_UPDATE_URL:-}
+      SITEADMIN_DOMAINS: ${SITEADMIN_DOMAINS:-}
+    volumes:
+      - siteadmin-state:/var/lib/siteadmin
+
+volumes:
+  siteadmin-state:
+    name: siteadmin-state
