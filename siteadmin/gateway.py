@@ -34,12 +34,38 @@ CATALOG = {
     "config_apply": ("L2", "Замена конфигурации с backup"),
     "cache_clear_force": ("L2", "Принудительная очистка кэша"),
     "backup_cleanup": ("L2", "Удаление старых rollback backup"),
+    "apt_update": ("L1", "Обновление индекса apt"),
+    "dnf_update": ("L1", "Обновление индекса dnf"),
+    "package_install": ("L2", "Установка пакетов с dry-run"),
+    "package_remove": ("L2", "Удаление пакетов с dry-run"),
+    "packages_installed": ("L0", "Список установленных пакетов"),
+    "config_read": ("L0", "Чтение файла конфигурации по allowlist"),
+    "db_list": ("L0", "Список баз данных"),
+    "db_status": ("L0", "Статус MySQL/PostgreSQL"),
+    "db_backup": ("L2", "Резервная копия базы данных"),
+    "git_pull": ("L2", "Обновление git checkout с fast-forward"),
+    "systemd_reload": ("L1", "Перечитать конфигурацию systemd"),
+    "cert_renew": ("L1", "Продлить сертификаты certbot"),
+    "shell": ("L2", "Команда shell в режиме serverctl"),
+}
+SERVERCTL_OPS = {
+    "apt_update", "dnf_update", "package_install", "package_remove", "packages_installed",
+    "config_read", "db_list", "db_status", "db_backup", "git_pull", "systemd_reload",
+    "cert_renew", "shell",
 }
 
 SERVICES = {"nginx", "apache2", "httpd", "php-fpm", "docker", "fail2ban"}
 CACHE_PATHS = {"nginx": Path("/var/cache/nginx"), "apache2": Path("/var/cache/apache2")}
 CONFIG_ROOTS = (Path("/etc/nginx"), Path("/etc/apache2"), Path("/etc/httpd"))
+CONFIG_READ_ROOTS = CONFIG_ROOTS + (Path("/etc/mysql"), Path("/etc/postgresql"), Path("/etc/systemd/system"))
+REPO_ROOTS = (Path("/var/www"), Path("/srv/www"), Path("/opt"))
+PACKAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9+_.:@-]{0,127}$")
+DATABASE_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,62}$")
 SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|private[_ -]?key|credential|api[_ -]?key)(\s*[:=]\s*)[^\s,;]+")
+DANGEROUS_SHELL = re.compile(
+    r"(?ix)(?:\brm\s+(?:-[\w-]+\s+)*-rf\b|\bmkfs(?:\.[\w]+)?\b|\bdd\s+if=|"
+    r"\bchmod\s+-R\s+/|\b(?:shutdown|reboot|halt)\b|\bsystemctl\s+(?:stop|disable|mask)\b)"
+)
 
 
 class OperationError(Exception):
@@ -72,6 +98,38 @@ def _path_in_roots(value: str) -> Path:
     if any(path == root or root in path.parents for root in CONFIG_ROOTS):
         return path
     raise OperationError("invalid_config_path", "Путь конфигурации не входит в allowlist")
+
+
+def _read_path_in_roots(value: str) -> Path:
+    path = Path(str(value or "")).expanduser().resolve()
+    if any(path == root or root in path.parents for root in CONFIG_READ_ROOTS):
+        return path
+    raise OperationError("invalid_config_path", "Путь конфигурации не входит в allowlist")
+
+
+def _repo_path(value: str) -> Path:
+    path = Path(str(value or "")).expanduser().resolve()
+    if any(path == root or root in path.parents for root in REPO_ROOTS):
+        return path
+    raise OperationError("invalid_repo_path", "Репозиторий не входит в allowlist")
+
+
+def _packages(value, *, field="packages"):
+    values = value.get(field, value.get("package"))
+    values = [values] if isinstance(values, str) else values
+    if not isinstance(values, list) or not values or len(values) > 20:
+        raise OperationError("invalid_package", "Нужен список из 1-20 пакетов")
+    names = [str(item).strip() for item in values]
+    if any(not PACKAGE_RE.fullmatch(item) for item in names):
+        raise OperationError("invalid_package", "Имя пакета не прошло проверку")
+    return names
+
+
+def _database(value: str) -> str:
+    name = str(value or "").strip()
+    if not DATABASE_RE.fullmatch(name):
+        raise OperationError("invalid_database", "Имя базы данных не прошло проверку")
+    return name
 
 
 class OperationGateway:
@@ -114,6 +172,8 @@ class OperationGateway:
     def execute(self, op: str, params=None, *, dry_run=False, confirm_token=None, setup_session_id=None):
         self._rate_limit()
         params = params if isinstance(params, dict) else {}
+        if op in SERVERCTL_OPS and self.state.read().get("module", "monitor") != "serverctl":
+            return {"ok": False, "error": {"code": "unknown_operation", "message": "Операция не зарегистрирована"}}
         if op not in CATALOG and op not in SETUP_CATALOG:
             return {"ok": False, "error": {"code": "unknown_operation", "message": "Операция не зарегистрирована"}}
         level = CATALOG[op][0] if op in CATALOG else "L3"
@@ -125,6 +185,16 @@ class OperationGateway:
                 plan = setup_plan(op, params, self.state)
             else:
                 plan = self._plan(op, params)
+            if op == "shell":
+                state = self.state.read()
+                if state.get("module", "monitor") != "serverctl":
+                    raise OperationError("module_required", "Shell доступен только модулю serverctl")
+                if not state.get("access_enabled", True):
+                    raise OperationError("access_disabled", "Доступ serverctl отключён владельцем")
+                if not state.get("shell_enabled", False):
+                    raise OperationError("shell_disabled", "Shell-режим выключен владельцем")
+                if os.geteuid() != 0:
+                    raise OperationError("root_required", "serverctl требует root-привилегии")
             if dry_run:
                 result = {"ok": True, "data": {"plan": plan}}
                 if level == "L2":
@@ -163,6 +233,50 @@ class OperationGateway:
             return {"op": op, "path": str(self.state.directory / "tmp"), "changes": ["Удалить временные файлы агента"]}
         if op == "cert_renew_dry":
             return {"op": op, "changes": ["certbot renew --dry-run"], "mutates": False}
+        if op in {"apt_update", "dnf_update"}:
+            manager = "apt-get" if op == "apt_update" else "dnf"
+            return {"op": op, "manager": manager, "changes": [f"{manager} update"]}
+        if op in {"package_install", "package_remove"}:
+            packages = _packages(params)
+            action = "install" if op == "package_install" else "remove"
+            return {"op": op, "packages": packages, "action": action,
+                    "changes": [f"Менеджер пакетов выполнит {action}"]}
+        if op == "packages_installed":
+            return {"op": op, "changes": []}
+        if op == "config_read":
+            path = _read_path_in_roots(params.get("path"))
+            if not path.is_file():
+                raise OperationError("config_not_found", "Файл конфигурации не найден")
+            return {"op": op, "path": str(path), "changes": []}
+        if op in {"db_list", "db_status"}:
+            engine = str(params.get("engine") or "").lower()
+            if engine and engine not in {"mysql", "postgres", "postgresql"}:
+                raise OperationError("invalid_database_engine", "Поддерживаются mysql и postgres")
+            return {"op": op, "engine": engine or "all", "changes": []}
+        if op == "db_backup":
+            engine = str(params.get("engine") or "").lower()
+            if engine not in {"mysql", "postgres", "postgresql"}:
+                raise OperationError("invalid_database_engine", "Для backup укажите mysql или postgres")
+            database = _database(params.get("database"))
+            target = Path(str(params.get("path") or (self.state.directory / "backups" / (database + ".dump")))).expanduser().resolve()
+            backup_root = (self.state.directory / "backups").resolve()
+            if target != backup_root and backup_root not in target.parents:
+                raise OperationError("invalid_backup_path", "Backup должен сохраняться только в state/backups")
+            return {"op": op, "engine": engine, "database": database, "path": str(target),
+                    "changes": ["Создать backup базы данных"]}
+        if op == "git_pull":
+            path = _repo_path(params.get("path"))
+            return {"op": op, "path": str(path), "changes": ["git pull --ff-only"]}
+        if op == "systemd_reload":
+            return {"op": op, "changes": ["systemctl daemon-reload"]}
+        if op == "cert_renew":
+            return {"op": op, "changes": ["certbot renew"]}
+        if op == "shell":
+            command = str(params.get("command") or "").strip()
+            if not command or len(command) > 2000 or "\x00" in command:
+                raise OperationError("invalid_shell_command", "Команда должна быть непустой и не длиннее 2000 символов")
+            return {"op": op, "command": _masked(command), "dangerous": bool(DANGEROUS_SHELL.search(command)),
+                    "changes": ["Выполнить shell-команду от root"]}
         if op == "config_apply":
             path = _path_in_roots(params.get("path"))
             content = params.get("content")
@@ -216,6 +330,54 @@ class OperationGateway:
             return self._command_result(_run("systemctl", "reload", "nginx"))
         if op == "cert_renew_dry":
             return self._command_result(_run("certbot", "renew", "--dry-run", timeout=120))
+        if op in {"apt_update", "dnf_update"}:
+            return self._command_result(_run("apt-get", "update") if op == "apt_update" else _run("dnf", "check-update"))
+        if op in {"package_install", "package_remove"}:
+            manager = "apt-get" if shutil.which("apt-get") else "dnf"
+            return self._command_result(_run(manager, plan["action"], "-y", *plan["packages"], timeout=300))
+        if op == "packages_installed":
+            if shutil.which("dpkg-query"):
+                return self._command_result(_run("dpkg-query", "-W", "-f", "${binary:Package}\t${Version}\n"))
+            return self._command_result(_run("rpm", "-qa"))
+        if op == "config_read":
+            try:
+                return {"ok": True, "data": {"path": plan["path"], "content": _masked(Path(plan["path"]).read_text(encoding="utf-8"))}}
+            except (OSError, UnicodeError) as exc:
+                raise OperationError("config_read_failed", str(exc)) from exc
+        if op == "db_list":
+            engines = [plan["engine"]] if plan["engine"] != "all" else ["mysql", "postgres"]
+            output = {}
+            for engine in engines:
+                command = ("mysql", "-NBe", "SHOW DATABASES") if engine == "mysql" else ("psql", "-At", "-c", "\\l")
+                result = _run(*command)
+                output[engine] = {"ok": result.returncode == 0, "output": _masked(result.stdout or result.stderr)}
+            return {"ok": any(item["ok"] for item in output.values()), "data": output}
+        if op == "db_status":
+            engines = [plan["engine"]] if plan["engine"] != "all" else ["mysql", "postgres"]
+            output = {}
+            for engine in engines:
+                executable = "mysqladmin" if engine == "mysql" else "pg_isready"
+                result = _run(executable)
+                output[engine] = {"ok": result.returncode == 0, "output": _masked(result.stdout or result.stderr)}
+            return {"ok": all(item["ok"] for item in output.values()), "data": output}
+        if op == "db_backup":
+            Path(plan["path"]).parent.mkdir(parents=True, exist_ok=True)
+            command = (("mysqldump", plan["database"]) if plan["engine"] == "mysql"
+                       else ("pg_dump", "--format=custom", "--file", plan["path"], plan["database"]))
+            if plan["engine"] == "mysql":
+                result = _run(*command)
+                if result.returncode == 0:
+                    Path(plan["path"]).write_text(result.stdout, encoding="utf-8")
+                return self._command_result(result)
+            return self._command_result(_run(*command, timeout=300))
+        if op == "git_pull":
+            return self._command_result(_run("git", "-C", plan["path"], "pull", "--ff-only", timeout=300))
+        if op == "systemd_reload":
+            return self._command_result(_run("systemctl", "daemon-reload"))
+        if op == "cert_renew":
+            return self._command_result(_run("certbot", "renew", timeout=300))
+        if op == "shell":
+            return self._command_result(_run("sh", "-c", str(params["command"]), timeout=120))
         if op == "tmp_clean":
             path = self.state.directory / "tmp"
             path.mkdir(parents=True, exist_ok=True)

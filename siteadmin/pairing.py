@@ -17,6 +17,7 @@ def pair(config: Config, state: State, code: str) -> dict:
         "hostname": socket.gethostname(),
         "version": __version__,
         "agent_key": state.read().get("agent_id", ""),
+        "module": config.module,
     }).encode("utf-8")
     req = request.Request(config.endpoint + "/api/agent/pair", data=payload,
                           headers={"Content-Type": "application/json", "User-Agent": "uHive-SiteAdmin/0.1"}, method="POST")

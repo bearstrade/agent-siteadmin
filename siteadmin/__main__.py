@@ -13,18 +13,24 @@ from .gateway import OperationGateway
 from .pairing import pair
 from .state import State
 from .update import UpdateError, UpdateManager
+from .uninstall import uninstall
 
 
 def run():
     config = Config.from_env()
     state = State(config.state_dir)
+    current = state.read()
+    state.update(module=config.module, access_enabled=current.get("access_enabled", True),
+                 shell_enabled=current.get("shell_enabled", False))
     collector = Collector(state)
     gateway = OperationGateway(state)
     channel = Channel(config, state)
+    if config.module == "serverctl" and __import__("os").geteuid() != 0:
+        raise SystemExit("serverctl требует root-привилегии")
     if not state.read().get("paired"):
         raise SystemExit("Агент не привязан: задайте pairing-код через siteadmin pair CODE")
     threading.Thread(target=LocalAPI(state, collector, gateway).serve, daemon=True, name="siteadmin-local-api").start()
-    if not state.read().get("profile_sent"):
+    if config.module == "monitor" and not state.read().get("profile_sent"):
         channel.send("profile", collector.profile())
     last_telemetry = 0
     while True:
@@ -32,7 +38,7 @@ def run():
         if gateway.expire_setup():
             channel.send("events", {"events": [{"type": "setup_expired", "severity": "warning",
                                                    "payload": {"message": "Режим настройки выключен по таймеру"}}]})
-        if time.time() - last_telemetry >= config.telemetry_interval:
+        if config.module == "monitor" and time.time() - last_telemetry >= config.telemetry_interval:
             telemetry, events = collector.telemetry()
             channel.send("telemetry", {"ts": telemetry["ts"], "payload": telemetry})
             if events:
@@ -64,6 +70,20 @@ def run():
         elif command.get("cmd") == "setup_stop" and command.get("command_id"):
             payload = command.get("payload") if isinstance(command.get("payload"), dict) else command
             channel.result(command["command_id"], gateway.stop_setup(payload.get("reason", "service")))
+        elif command.get("cmd") == "shutdown":
+            state.update(access_enabled=False, shutdown_requested=True)
+            channel.send("events", {"events": [{"type": "serverctl_shutdown", "severity": "warning",
+                                                   "payload": {"message": "Доступ serverctl отключён хабом"}}]})
+            if command.get("command_id"):
+                channel.result(command["command_id"], {"ok": True, "status": "shutdown"})
+            return
+        elif command.get("cmd") == "uninstall" and command.get("command_id"):
+            result = {"ok": True, "status": "uninstalling"}
+            channel.result(command["command_id"], result)
+            channel.send("events", {"events": [{"type": "serverctl_uninstalled", "severity": "info",
+                                                   "payload": {"message": "Модуль serverctl удалён"}}]})
+            uninstall(config, state)
+            return
 
 
 def main():
@@ -78,6 +98,8 @@ def main():
     update_parser = sub.add_parser("update")
     update_parser.add_argument("manifest_url", nargs="?")
     update_parser.add_argument("--check", action="store_true")
+    uninstall_parser = sub.add_parser("uninstall")
+    uninstall_parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     config = Config.from_env()
     state = State(config.state_dir)
@@ -96,6 +118,10 @@ def main():
             print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
         except UpdateError as exc:
             raise SystemExit("Ошибка обновления [%s]: %s" % (exc.code, exc)) from exc
+    elif args.command == "uninstall":
+        if config.module != "serverctl":
+            raise SystemExit("Команда uninstall доступна только для serverctl")
+        print(json.dumps(uninstall(config, state, dry_run=args.dry_run), ensure_ascii=False, indent=2, default=str))
     else:
         run()
 

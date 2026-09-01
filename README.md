@@ -37,6 +37,12 @@ curl -fsSL https://hub.uhive.ai/agent-siteadmin/install.sh | sudo bash -- --dock
 Для предварительной проверки окружения без установки: `bash install.sh
 --check --systemd` или `bash install.sh --check --docker`.
 
+Выбор модулей выполняется явно: `--module monitor` (только телеметрия),
+`--module serverctl` (только постоянный доступ бота) или `--module both`.
+Для `serverctl` требуется запуск от root/sudo; он использует отдельные
+`/opt/serverctl`, `/var/lib/serverctl`, `serverctl.service` и CLI `serverctl`.
+Удаление через `serverctl uninstall` не затрагивает `siteadmin`.
+
 ## Docker
 
 ```sh
