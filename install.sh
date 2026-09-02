@@ -24,6 +24,52 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then echo "Ошибка: требуется Python 3.10+. Установите python3." >&2; exit 2; fi
 PYTHON=$(command -v python3)
 if ! "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)'; then echo "Ошибка: нужен Python 3.10 или новее." >&2; exit 2; fi
+
+# ── Пред-установка: системные зависимости (Debian/Ubuntu) ─────────────
+# На свежих серверах python3-venv (ensurepip) и curl часто не стоят —
+# ставим автоматически, чтобы установка проходила без ручных шагов.
+APT_UPDATED=0
+run_apt() {
+	if [[ "$(id -u)" == 0 ]]; then
+		"$@"
+	elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+		sudo "$@"
+	else
+		echo "Ошибка: для установки пакетов нужен root или sudo." >&2
+		exit 2
+	fi
+}
+apt_install() {
+	if [[ "$APT_UPDATED" == 0 ]]; then
+		run_apt apt-get update -qq
+		APT_UPDATED=1
+	fi
+	run_apt apt-get install -y --no-install-recommends "$@"
+}
+ensure_curl() {
+	if command -v curl >/dev/null 2>&1; then return 0; fi
+	if command -v apt-get >/dev/null 2>&1; then
+		echo "Устанавливаю curl (нужен для скачивания исходников)..."
+		apt_install curl
+		return 0
+	fi
+	echo "Ошибка: отсутствует curl." >&2
+	exit 2
+}
+ensure_ensurepip() {
+	if "$PYTHON" -c 'import ensurepip' >/dev/null 2>&1; then return 0; fi
+	if command -v apt-get >/dev/null 2>&1; then
+		echo "Устанавливаю python3-venv (нужен для создания venv)..."
+		apt_install python3-venv
+		if ! "$PYTHON" -c 'import ensurepip' >/dev/null 2>&1; then
+			echo "Ошибка: python3-venv установлен, но ensurepip всё ещё недоступен." >&2
+			exit 2
+		fi
+		return 0
+	fi
+	echo "Ошибка: отсутствует ensurepip (python3-venv). Установите: apt install python3-venv" >&2
+	exit 2
+}
 if [[ "$MODE" == docker ]]; then
 	command -v docker >/dev/null 2>&1 || { echo "Ошибка: требуется docker." >&2; exit 2; }
 	if [[ "$MODULE" == both ]]; then echo "Ошибка: для обоих модулей используйте --systemd." >&2; exit 2; fi
@@ -43,6 +89,7 @@ if [[ -z "$PAIR" ]]; then read -r -p "Введите pairing-код: " PAIR; fi
 if [[ -z "$PAIR" ]]; then echo "Ошибка: pairing-код не задан" >&2; exit 2; fi
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 if [[ ! -d "$SCRIPT_DIR/siteadmin" && -n "${SITEADMIN_AGENT_SOURCE_BASE:-}" ]]; then
+	ensure_curl
 	SOURCE_DIR=$(mktemp -d)
 	trap 'rm -rf "$SOURCE_DIR"' EXIT
 	mkdir -p "$SOURCE_DIR/siteadmin"
@@ -86,10 +133,19 @@ install_systemd_module() {
 		echo "Ошибка: установка serverctl требует root или sudo." >&2
 		exit 2
 	fi
+	ensure_ensurepip
 	mkdir -p "$prefix" "$state" "/etc/$module"
 	cp -R "$SCRIPT_DIR/siteadmin" "$prefix/"
 	cp "$SCRIPT_DIR/pyproject.toml" "$prefix/"
+	# venv пересоздаём начисто: после неудачной попытки он может быть битым
+	[[ -d "$prefix/venv" ]] && rm -rf "$prefix/venv"
+	echo "Создаю виртуальное окружение ($prefix/venv)..."
 	python3 -m venv "$prefix/venv"
+	if [[ ! -x "$prefix/venv/bin/pip" ]]; then
+		echo "Ошибка: в venv не появился pip (проблема с ensurepip)." >&2
+		exit 2
+	fi
+	echo "Устанавливаю зависимости (cryptography)..."
 	"$prefix/venv/bin/pip" install --no-cache-dir "cryptography>=42,<46"
 	cat > "/etc/systemd/system/$service.service" <<UNIT
 [Unit]
@@ -119,7 +175,11 @@ cat > "/usr/local/bin/$cli" <<CLI
 exec $prefix/venv/bin/python -m siteadmin "\$@"
 CLI
 chmod 755 "/usr/local/bin/$cli"
-"$prefix/venv/bin/python" -m siteadmin pair "$PAIR"
+# pair выполняется из каталога модуля: `python -m siteadmin` ищет пакет в cwd
+(
+	cd "$prefix"
+	"$prefix/venv/bin/python" -m siteadmin pair "$PAIR"
+)
 }
 
 if [[ "$MODULE" == monitor || "$MODULE" == both ]]; then
