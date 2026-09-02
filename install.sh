@@ -135,6 +135,7 @@ install_systemd_module() {
 	fi
 	ensure_ensurepip
 	mkdir -p "$prefix" "$state" "/etc/$module"
+	echo "Устанавливаю модуль $module в $prefix ..."
 	cp -R "$SCRIPT_DIR/siteadmin" "$prefix/"
 	cp "$SCRIPT_DIR/pyproject.toml" "$prefix/"
 	# venv пересоздаём начисто: после неудачной попытки он может быть битым
@@ -147,6 +148,7 @@ install_systemd_module() {
 	fi
 	echo "Устанавливаю зависимости (cryptography)..."
 	"$prefix/venv/bin/pip" install --no-cache-dir "cryptography>=42,<46"
+	echo "Пишу systemd-юнит и конфиг ($service.service)..."
 	cat > "/etc/systemd/system/$service.service" <<UNIT
 [Unit]
 Description=uHive $module Agent
@@ -178,6 +180,7 @@ chmod 755 "/usr/local/bin/$cli"
 # pair выполняется из каталога модуля: `python -m siteadmin` ищет пакет в cwd
 (
 	cd "$prefix"
+	echo "Выполняю pairing с Hive (код ${PAIR:-<пусто>})..."
 	"$prefix/venv/bin/python" -m siteadmin pair "$PAIR"
 )
 }
@@ -189,7 +192,8 @@ if [[ "$MODULE" == serverctl || "$MODULE" == both ]]; then
 	install_systemd_module serverctl /opt/serverctl /var/lib/serverctl serverctl serverctl
 fi
 systemctl daemon-reload
-if [[ "$MODULE" == monitor || "$MODULE" == both ]]; then systemctl enable --now siteadmin.service; fi
-if [[ "$MODULE" == serverctl || "$MODULE" == both ]]; then systemctl enable --now serverctl.service; fi
-echo "Установка завершена: module=$MODULE. Проверка: systemctl status siteadmin/serverctl"
+if [[ "$MODULE" == monitor || "$MODULE" == both ]]; then echo "Запускаю службу siteadmin.service..."; systemctl enable --now siteadmin.service; fi
+if [[ "$MODULE" == serverctl || "$MODULE" == both ]]; then echo "Запускаю службу serverctl.service..."; systemctl enable --now serverctl.service; fi
+echo "✅ Модуль установлен: module=$MODULE"
+echo "Проверка: systemctl status siteadmin/serverctl"
 echo "Документация: https://hub.uhive.ai/docs/site-admin"
