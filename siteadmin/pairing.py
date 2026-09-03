@@ -23,5 +23,9 @@ def pair(config: Config, state: State, code: str) -> dict:
                           headers={"Content-Type": "application/json", "User-Agent": "uHive-SiteAdmin/0.1"}, method="POST")
     with request.urlopen(req, timeout=20) as response:
         result = json.load(response)
-    state.update(agent_id=result["agent_id"], agent_token=result["agent_token"], paired=True)
+    # Новый агент (новая привязка) обязан прислать свежий профиль: при
+    # переустановке в state мог остаться старый profile_sent=true — иначе
+    # профиль новой пары никогда не дойдёт до сервиса.
+    state.update(agent_id=result["agent_id"], agent_token=result["agent_token"],
+                 paired=True, profile_sent=False)
     return result
