@@ -177,11 +177,14 @@ cat > "/usr/local/bin/$cli" <<CLI
 exec $prefix/venv/bin/python -m siteadmin "\$@"
 CLI
 chmod 755 "/usr/local/bin/$cli"
-# pair выполняется из каталога модуля: `python -m siteadmin` ищет пакет в cwd
+# pair выполняется из каталога модуля: `python -m siteadmin` ищет пакет в cwd.
+# Без SITEADMIN_MODULE CLI считает себя monitor — serverctl не привяжется
+# (код пары для monitor уже израсходован). Передаём модулю его env.
 (
 	cd "$prefix"
 	echo "Выполняю pairing с Hive (код ${PAIR:-<пусто>})..."
-	"$prefix/venv/bin/python" -m siteadmin pair "$PAIR"
+	SITEADMIN_MODULE="$module" SITEADMIN_STATE_DIR="$state" \
+		"$prefix/venv/bin/python" -m siteadmin pair "$PAIR"
 )
 }
 
