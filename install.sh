@@ -133,6 +133,11 @@ install_systemd_module() {
 		echo "Ошибка: установка serverctl требует root или sudo." >&2
 		exit 2
 	fi
+	# Останавливаем работающую службу ДО замены файлов: иначе старый
+	# python-процесс продолжает крутить старый код в памяти (Restart=always
+	# и enable --now не перезапускают уже активный юнит), и новый агент
+	# шлёт профиль со старым кодом (например, без детекции Hermes).
+	systemctl stop "$service.service" 2>/dev/null || true
 	ensure_ensurepip
 	mkdir -p "$prefix" "$state" "/etc/$module"
 	echo "Устанавливаю модуль $module в $prefix ..."
