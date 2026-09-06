@@ -40,6 +40,16 @@ def _memory():
     return {"total_bytes": total, "available_bytes": available, "used_percent": round((1 - available / total) * 100, 1) if total else None}
 
 
+def _docker_hermes() -> bool:
+    """True, если в Docker запущен контейнер Hermes (имя или образ содержат 'hermes')."""
+    if not shutil.which("docker"):
+        return False
+    out = _command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}", timeout=4)
+    if not out:
+        out = _command("docker", "ps", timeout=4)
+    return "hermes" in out.lower()
+
+
 def collect() -> dict:
     disks = []
     for path in ("/", "/var", "/home"):
@@ -56,6 +66,7 @@ def collect() -> dict:
         else:
             services[name] = "unknown"
     software = {name: bool(shutil.which(name)) for name in ("nginx", "apache2", "httpd", "php", "node", "docker", "podman")}
+    software["hermes"] = _docker_hermes()
     return {"os": _os_release(), "kernel": platform.release(), "architecture": platform.machine(),
             "hostname": socket.gethostname()[:255], "uptime_seconds": _uptime(),
             "cpu": {"model": _cpu_model(), "cores": os.cpu_count() or 1}, "memory": _memory(),
