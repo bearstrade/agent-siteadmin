@@ -40,14 +40,18 @@ def _memory():
     return {"total_bytes": total, "available_bytes": available, "used_percent": round((1 - available / total) * 100, 1) if total else None}
 
 
-def _docker_hermes() -> bool:
-    """True, если в Docker запущен контейнер Hermes (имя или образ содержат 'hermes')."""
-    if not shutil.which("docker"):
-        return False
-    out = _command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}", timeout=4)
-    if not out:
-        out = _command("docker", "ps", timeout=4)
-    return "hermes" in out.lower()
+def _hermes_detected() -> bool:
+    """True, если на хосте работает Hermes (uHive): docker-контейнер, systemd-юнит
+    или процесс, в имени/образе/аргументах которых есть 'hermes'."""
+    if shutil.which("docker"):
+        out = _command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}", timeout=4)
+        if "hermes" in (out or "").lower():
+            return True
+    units = _command("systemctl", "list-units", "--type=service", "--no-legend", "--no-pager", timeout=4)
+    if "hermes" in (units or "").lower():
+        return True
+    procs = _command("ps", "-eo", "args", timeout=4)
+    return "hermes" in (procs or "").lower()
 
 
 def collect() -> dict:
@@ -66,7 +70,7 @@ def collect() -> dict:
         else:
             services[name] = "unknown"
     software = {name: bool(shutil.which(name)) for name in ("nginx", "apache2", "httpd", "php", "node", "docker", "podman")}
-    software["hermes"] = _docker_hermes()
+    software["hermes"] = _hermes_detected()
     return {"os": _os_release(), "kernel": platform.release(), "architecture": platform.machine(),
             "hostname": socket.gethostname()[:255], "uptime_seconds": _uptime(),
             "cpu": {"model": _cpu_model(), "cores": os.cpu_count() or 1}, "memory": _memory(),
