@@ -59,8 +59,12 @@ def collect() -> dict:
     for path in ("/", "/var", "/home"):
         try:
             usage = shutil.disk_usage(path)
-            disks.append({"mount": path, "total_bytes": usage.total, "used_bytes": usage.used,
-                          "used_percent": round(usage.used * 100 / usage.total, 1)})
+            disk = {"mount": path, "total_bytes": usage.total, "used_bytes": usage.used,
+                    "used_percent": round(usage.used * 100 / usage.total, 1)}
+            if path == "/":
+                # Топ-каталоги по размеру — только для корневого раздела (du -x).
+                disk["top_consumers"] = _disk_top_consumers()
+            disks.append(disk)
         except OSError:
             pass
     services = {}
@@ -71,11 +75,94 @@ def collect() -> dict:
             services[name] = "unknown"
     software = {name: bool(shutil.which(name)) for name in ("nginx", "apache2", "httpd", "php", "node", "docker", "podman")}
     software["hermes"] = _hermes_detected()
-    return {"os": _os_release(), "kernel": platform.release(), "architecture": platform.machine(),
-            "hostname": socket.gethostname()[:255], "uptime_seconds": _uptime(),
-            "cpu": {"model": _cpu_model(), "cores": os.cpu_count() or 1}, "memory": _memory(),
-            "disks": disks, "python": platform.python_version(), "software": software,
-            "services": services, "network": {"interfaces": [name for _, name in socket.if_nameindex()]}}
+    cpu = {"model": _cpu_model(), "cores": os.cpu_count() or 1}
+    load = _loadavg()
+    if load:
+        cpu["load"] = load
+    memory = _memory()
+    swap = _swap()
+    if swap:
+        memory["swap"] = swap
+    profile = {"os": _os_release(), "kernel": platform.release(), "architecture": platform.machine(),
+               "hostname": socket.gethostname()[:255], "uptime_seconds": _uptime(),
+               "cpu": cpu, "memory": memory,
+               "disks": disks, "python": platform.python_version(), "software": software,
+               "services": services, "network": {"interfaces": [name for _, name in socket.if_nameindex()]}}
+    processes = _top_processes()
+    if processes:
+        profile["processes"] = processes
+    return profile
+
+
+def _loadavg() -> list:
+    """Load average 1/5/15 из /proc/loadavg; [] если недоступно."""
+    try:
+        parts = Path("/proc/loadavg").read_text().split()
+        return [round(float(parts[0]), 2), round(float(parts[1]), 2), round(float(parts[2]), 2)]
+    except (OSError, ValueError, IndexError):
+        return []
+
+
+def _swap() -> dict:
+    """Swap из /proc/meminfo; None если swap отсутствует или не читается."""
+    try:
+        values = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            values[key] = int(value.strip().split()[0]) * 1024
+        total = values.get("SwapTotal", 0)
+        free = values.get("SwapFree", 0)
+        if not total:
+            return None
+        used = max(0, total - free)
+        return {"total_bytes": total, "used_bytes": used,
+                "used_percent": round(used * 100 / total, 1)}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _top_processes(limit: int = 6) -> list:
+    """Топ процессов по памяти: pid, имя, %MEM, RSS в байтах."""
+    out = _command("ps", "-eo", "pid=,comm=,%mem=,rss=", "--sort=-%mem", timeout=4)
+    rows = []
+    for line in (out or "").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, name, mem, rss = parts
+        rows.append({
+            "pid": int(pid) if pid.lstrip("-").isdigit() else None,
+            "name": name[:64],
+            "command": name[:128],
+            "mem_percent": _to_float(mem),
+            "rss_bytes": int(float(rss or 0) * 1024),
+        })
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _disk_top_consumers(limit: int = 4) -> list:
+    """Крупнейшие каталоги на «/» (du -x — не пересекает ФС; /proc,/sys,/dev отпадают)."""
+    out = _command("du", "-x", "-k", "--max-depth=1", "/", timeout=12)
+    rows = []
+    for line in (out or "").splitlines():
+        kb, _, path = line.rstrip("\n").partition("\t")
+        if not kb.isdigit():
+            continue
+        path = path.rstrip("/") or "/"
+        if path == "/":
+            continue
+        rows.append({"path": path[:255], "bytes": int(kb) * 1024})
+    rows.sort(key=lambda r: r["bytes"], reverse=True)
+    return rows[:limit]
+
+
+def _to_float(value) -> float:
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _uptime():
