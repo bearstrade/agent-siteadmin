@@ -78,3 +78,81 @@ def test_swap_parses_and_absent_when_zero(monkeypatch):
     # нет swap → None (UI просто не покажет блок)
     FakePath._files["/proc/meminfo"] = "MemTotal: 983040 kB\nSwapTotal: 0 kB\n"
     assert sp._swap() is None
+
+
+def test_hermes_state_detects_container_process(monkeypatch):
+    """Бот в чужом контейнере (имя/образ без 'hermes', напр. xfw-bot), но
+    процесс внутри — с 'hermes': значит установлен и работает."""
+    def fake_command(*args, **kwargs):
+        if args[:2] == ("ps", "-eo"):
+            return ("/usr/local/lib/hermes-agent/venv/bin/python "
+                    "-m hermes_cli.main gateway run")
+        return ""
+
+    monkeypatch.setattr(sp, "_command", fake_command)
+    monkeypatch.setattr(sp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sp, "_hermes_paths", lambda: False)
+    assert sp._hermes_state() == {"installed": True, "running": True}
+
+
+def test_hermes_state_stopped_container_is_installed_only(monkeypatch):
+    def fake_command(*args, **kwargs):
+        if args[:3] == ("docker", "ps", "-a"):
+            return ("my-hermes\tghcr.io/nousresearch/hermes-agent:latest\t"
+                    "/hermes run")
+        return ""
+
+    monkeypatch.setattr(sp, "_command", fake_command)
+    monkeypatch.setattr(
+        sp.shutil, "which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(sp, "_hermes_paths", lambda: False)
+    assert sp._hermes_state() == {"installed": True, "running": False}
+
+
+def test_hermes_state_absent(monkeypatch):
+    monkeypatch.setattr(sp, "_command", lambda *a, **k: "")
+    monkeypatch.setattr(sp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sp, "_hermes_paths", lambda: False)
+    assert sp._hermes_state() == {"installed": False, "running": False}
+
+
+def test_hermes_paths_matches_srv_bot_home(monkeypatch, tmp_path):
+    """`/srv/<bot>/hermes` (home контейнерного бота на хосте) = установлен."""
+    bot_home = tmp_path / "xfw-bot" / "hermes"
+    bot_home.mkdir(parents=True)
+
+    class FakePath:
+        def __init__(self, value):
+            self.value = str(value)
+
+        def exists(self):
+            return False  # типовые каталоги отсутствуют
+
+        def glob(self, pattern):
+            return iter([bot_home])
+
+    monkeypatch.setattr(sp, "Path", FakePath)
+    assert sp._hermes_paths() is True
+
+
+def test_software_state_shape(monkeypatch):
+    monkeypatch.setattr(
+        sp.shutil, "which",
+        lambda name: "/usr/bin/" + name
+        if name in ("nginx", "docker", "systemctl") else None)
+
+    def fake_command(*args, **kwargs):
+        if args[:2] == ("systemctl", "is-active") and args[2] == "nginx":
+            return "active"
+        return "inactive"
+
+    monkeypatch.setattr(sp, "_command", fake_command)
+    monkeypatch.setattr(sp, "_hermes_state",
+                        lambda: {"installed": True, "running": False})
+    software = sp.software_state()
+    assert software["nginx"] == {"installed": True, "running": True}
+    assert software["docker"] == {"installed": True, "running": False}
+    assert software["podman"] == {"installed": False, "running": None}
+    assert software["hermes"] == {"installed": True, "running": False}
+

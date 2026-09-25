@@ -40,18 +40,96 @@ def _memory():
     return {"total_bytes": total, "available_bytes": available, "used_percent": round((1 - available / total) * 100, 1) if total else None}
 
 
-def _hermes_detected() -> bool:
-    """True, если на хосте работает Hermes (uHive): docker-контейнер, systemd-юнит
-    или процесс, в имени/образе/аргументах которых есть 'hermes'."""
+_HERMES_PATHS = ("/root/.hermes", "/opt/hermes", "/usr/local/lib/hermes-agent")
+
+
+def _hermes_paths() -> bool:
+    """True, если на диске есть типовые места установки Hermes.
+
+    Включая home контейнерных ботов: `/srv/<bot>/hermes` (монтируется как
+    `/root/.hermes` внутри контейнера, но каталог существует и на хосте —
+    так ловится, например, бот xfw-bot, у которого в имени/образе нет
+    'hermes')."""
+    for path in _HERMES_PATHS:
+        try:
+            if Path(path).exists():
+                return True
+        except OSError:
+            continue
+    try:
+        for value in Path("/srv").glob("*/hermes"):
+            try:
+                if value.is_dir():
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return False
+
+
+def _hermes_state() -> dict:
+    """Установлен ли Hermes на хосте и работает ли он — универсально.
+
+    Сигналы «установлен»: бинарь `hermes`, типовые каталоги (в т.ч.
+    `/srv/<bot>/hermes`), docker-контейнеры/образы/команды с 'hermes' (в т.ч.
+    остановленные), файлы systemd-юнитов.
+    Сигналы «работает»: запущенный контейнер с 'hermes', процесс с 'hermes' в
+    аргументах (ловятся и процессы внутри чужих контейнеров — например
+    `python -m hermes_cli.main gateway run`), активный юнит.
+    """
+    installed = False
+    running = False
+    if shutil.which("hermes"):
+        installed = True
+    if _hermes_paths():
+        installed = True
     if shutil.which("docker"):
-        out = _command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}", timeout=4)
-        if "hermes" in (out or "").lower():
-            return True
-    units = _command("systemctl", "list-units", "--type=service", "--no-legend", "--no-pager", timeout=4)
-    if "hermes" in (units or "").lower():
-        return True
+        existing = _command("docker", "ps", "-a", "--format",
+                            "{{.Names}}\t{{.Image}}\t{{.Command}}", timeout=4)
+        if "hermes" in (existing or "").lower():
+            installed = True
+        up = _command("docker", "ps", "--format",
+                      "{{.Names}}\t{{.Image}}\t{{.Command}}", timeout=4)
+        if "hermes" in (up or "").lower():
+            installed = running = True
     procs = _command("ps", "-eo", "args", timeout=4)
-    return "hermes" in (procs or "").lower()
+    if "hermes" in (procs or "").lower():
+        installed = running = True
+    units = _command("systemctl", "list-units", "--type=service",
+                     "--no-legend", "--no-pager", timeout=4)
+    if "hermes" in (units or "").lower():
+        installed = running = True
+    unit_files = _command("systemctl", "list-unit-files", "--type=service",
+                          "--no-legend", "--no-pager", timeout=4)
+    if "hermes" in (unit_files or "").lower():
+        installed = True
+    return {"installed": installed, "running": running}
+
+
+_SOFTWARE_BINS = ("nginx", "apache2", "httpd", "php", "node", "docker", "podman")
+# ПО → systemd-юнит, по которому определяем «работает» (если есть).
+_SOFTWARE_SERVICE = {"nginx": "nginx", "apache2": "apache2", "httpd": "httpd",
+                    "php": "php-fpm", "docker": "docker"}
+
+
+def software_state() -> dict:
+    """Установленное ПО со статусом: installed (есть) и running (запущено).
+
+    running = None, когда для ПО нет известного юнита (не утверждаем ни да, ни
+    нет). Считается на каждом сборе (профиль и телеметрия) — без отдельных
+    частых проверок."""
+    software = {}
+    for name in _SOFTWARE_BINS:
+        installed = bool(shutil.which(name))
+        service = _SOFTWARE_SERVICE.get(name)
+        running = None
+        if service and shutil.which("systemctl"):
+            state = _command("systemctl", "is-active", service, timeout=2) or "unknown"
+            running = state == "active" if installed else False
+        software[name] = {"installed": installed, "running": running}
+    software["hermes"] = _hermes_state()
+    return software
 
 
 def collect() -> dict:
@@ -73,8 +151,7 @@ def collect() -> dict:
             services[name] = _command("systemctl", "is-active", name) or "unknown"
         else:
             services[name] = "unknown"
-    software = {name: bool(shutil.which(name)) for name in ("nginx", "apache2", "httpd", "php", "node", "docker", "podman")}
-    software["hermes"] = _hermes_detected()
+    software = software_state()
     cpu = {"model": _cpu_model(), "cores": os.cpu_count() or 1}
     load = _loadavg()
     if load:

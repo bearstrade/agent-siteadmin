@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib import parse, request
 
-from .system_profile import _memory
+from .system_profile import _memory, software_state
 
 
 def _cpu_sample():
@@ -92,4 +92,6 @@ def collect(previous=None):
     return {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "cpu": {"avg_percent": _cpu_sample(), "max_percent": _cpu_sample()},
             "memory": memory, "disks": disks, "top_processes": _processes(),
             "services": services, "ports": (previous or {}).get("ports", []),
-            "certs": certs, "reachability": reachability}
+            "certs": certs, "reachability": reachability,
+            "software": software_state(),
+            }
