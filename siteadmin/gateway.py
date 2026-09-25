@@ -10,6 +10,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import maintenance
 from .security_scan import _listeners
 from .setup import SETUP_CATALOG, SetupError, setup_apply, setup_expire, setup_plan, setup_start, setup_status, setup_stop
 from .system_profile import collect as collect_profile
@@ -28,6 +29,8 @@ CATALOG = {
     "nginx_reload": ("L1", "Проверка и reload nginx"),
     "cache_clear": ("L1", "Очистка известных кэш-путей"),
     "tmp_clean": ("L1", "Очистка временных файлов агента"),
+    "disk_cleanup": ("L1", "Безопасная дисковая уборка"),
+    "disk_cleanup_deep": ("L2", "Глубокая дисковая уборка с удалением неиспользуемых образов"),
     "cert_renew_dry": ("L1", "Пробный certbot renew"),
     "service_restart": ("L2", "Принудительный перезапуск сервиса"),
     "service_stop": ("L2", "Остановка сервиса"),
@@ -231,6 +234,8 @@ class OperationGateway:
             return {"op": op, "path": str(CACHE_PATHS[name]), "changes": ["Удалить содержимое известного кэш-каталога"]}
         if op == "tmp_clean":
             return {"op": op, "path": str(self.state.directory / "tmp"), "changes": ["Удалить временные файлы агента"]}
+        if op in {"disk_cleanup", "disk_cleanup_deep"}:
+            return maintenance.plan_cleanup(deep=op == "disk_cleanup_deep")
         if op == "cert_renew_dry":
             return {"op": op, "changes": ["certbot renew --dry-run"], "mutates": False}
         if op in {"apt_update", "dnf_update"}:
@@ -310,6 +315,8 @@ class OperationGateway:
         if op == "disk":
             profile = collect_profile()
             return {"ok": True, "data": {"disks": profile.get("disks", [])}}
+        if op in {"disk_cleanup", "disk_cleanup_deep"}:
+            return {"ok": True, "data": maintenance.run_cleanup(deep=op == "disk_cleanup_deep")}
         if op == "services":
             profile = collect_profile()
             return {"ok": True, "data": {"services": profile.get("services", {})}}

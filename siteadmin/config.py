@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .maintenance import CleanupSettings
+
 
 @dataclass(frozen=True)
 class Config:
@@ -15,6 +17,8 @@ class Config:
     install_dir: Path = Path("/opt/siteadmin")
     poll_timeout: int = 55
     telemetry_interval: int = 300
+    autoclean: bool = True
+    cleanup_settings: CleanupSettings = CleanupSettings()
 
     @classmethod
     def from_env(cls):
@@ -31,4 +35,6 @@ class Config:
             install_dir=Path(os.environ.get("SITEADMIN_INSTALL_DIR", "/opt/siteadmin")),
             poll_timeout=max(5, min(60, int(os.environ.get("SITEADMIN_POLL_TIMEOUT", "55")))),
             telemetry_interval=max(60, int(os.environ.get("SITEADMIN_TELEMETRY_INTERVAL", "300"))),
+            autoclean=os.environ.get("SITEADMIN_AUTOCLEAN", "1").strip().lower() not in {"0", "false", "no"},
+            cleanup_settings=CleanupSettings.from_env(),
         )

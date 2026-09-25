@@ -22,7 +22,7 @@ def run():
     current = state.read()
     state.update(module=config.module, access_enabled=current.get("access_enabled", True),
                  shell_enabled=current.get("shell_enabled", False))
-    collector = Collector(state)
+    collector = Collector(state, autoclean=config.autoclean, cleanup_settings=config.cleanup_settings)
     gateway = OperationGateway(state)
     channel = Channel(config, state)
     if config.module == "serverctl" and __import__("os").geteuid() != 0:

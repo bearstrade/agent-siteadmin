@@ -62,3 +62,21 @@ def test_config_apply_rolls_back_when_post_verify_fails(tmp_path, monkeypatch):
     assert result["ok"] is False
     assert result["rollback"]["used"] is True
     assert config_path.read_text(encoding="utf-8") == "working"
+
+
+def test_disk_cleanup_uses_report_and_deep_confirmation(tmp_path, monkeypatch):
+    state = State(tmp_path / "state")
+    engine = OperationGateway(state)
+    report = {"actions": [], "freed_total": 12, "df_before": {}, "df_after": {}, "duration_ms": 1, "skipped": []}
+    monkeypatch.setattr(gateway.maintenance, "run_cleanup", lambda **kwargs: report)
+
+    result = engine.execute("disk_cleanup", {})
+    assert result == {"ok": True, "data": report}
+
+    preview = engine.execute("disk_cleanup_deep", {}, dry_run=True)
+    assert preview["ok"] is True
+    assert "confirm_token" in preview
+    monkeypatch.setattr(gateway.maintenance, "plan_cleanup", lambda **kwargs: {"actions": [], "skipped": []})
+    assert engine.execute("disk_cleanup_deep", {}, confirm_token=preview["confirm_token"]) == {
+        "ok": True, "data": report,
+    }

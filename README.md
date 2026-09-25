@@ -27,6 +27,14 @@ curl -fsSL https://hub.uhive.ai/agent-siteadmin/install.sh | sudo bash -- --pair
 `SITEADMIN_DOMAINS=example.com,https://admin.example.com`. Агент сам создаёт
 venv, systemd unit и локальное состояние в `/var/lib/siteadmin`.
 
+Лёгкая дисковая уборка включена по умолчанию и запускается не чаще раза в
+24 часа: journal, кэш пакетов, dangling-образы и кэш сборки Docker, большие
+json-file логи Docker и `btmp`. Она не удаляет контейнеры, тома, активные
+образы, `/tmp` или `auth.log`. Для отключения задайте `SITEADMIN_AUTOCLEAN=0`.
+Лимиты настраиваются через `JOURNAL_CAP_MB` (100), `DOCKER_LOG_CAP_MB` (50)
+и `BTMP_CAP_MB` (20). Глубокая уборка с неиспользуемыми образами доступна
+только отдельной подтверждённой операцией.
+
 Установщик поддерживает явный выбор способа запуска:
 
 ```sh
